@@ -1,87 +1,153 @@
-const WebSocket = require('ws');
-const http = require('http');
-const fs = require('fs');
-const path = require('path');
-
-const server = http.createServer((req, res) => {
-    // خدمة ملفات HTML (اختياري، يمكن استخدام GitHub Pages بدلاً من ذلك)
-    if (req.url === '/') {
-        res.writeHead(200, { 'Content-Type': 'text/html' });
-        res.end('<h1>WebRTC Signaling Server</h1><p>استخدم <a href="/sender.html">/sender.html</a> أو <a href="/receiver.html">/receiver.html</a></p>');
-    } else if (req.url === '/sender.html') {
-        fs.readFile(path.join(__dirname, 'sender.html'), (err, data) => {
-            if (err) {
-                res.writeHead(404);
-                res.end('الملف غير موجود');
-            } else {
-                res.writeHead(200, { 'Content-Type': 'text/html' });
-                res.end(data);
-            }
-        });
-    } else if (req.url === '/receiver.html') {
-        fs.readFile(path.join(__dirname, 'receiver.html'), (err, data) => {
-            if (err) {
-                res.writeHead(404);
-                res.end('الملف غير موجود');
-            } else {
-                res.writeHead(200, { 'Content-Type': 'text/html' });
-                res.end(data);
-            }
-        });
-    } else {
-        res.writeHead(404);
-        res.end('غير موجود');
-    }
-});
-
-const wss = new WebSocket.Server({ server });
-
-let clients = { sender: null, receiver: null };
-
-wss.on('connection', (ws) => {
-    console.log('🟢 عميل جديد متصل');
-
-    ws.on('message', (message) => {
-        try {
-            const data = JSON.parse(message);
-            
-            if (data.type === 'register') {
-                clients[data.role] = ws;
-                console.log(`✅ تم تسجيل ${data.role}`);
-            }
-            else if (data.type === 'offer') {
-                if (clients.receiver) {
-                    clients.receiver.send(JSON.stringify({ type: 'offer', offer: data.offer }));
-                    console.log('📤 تم تمرير العرض إلى المستقبل');
-                }
-            }
-            else if (data.type === 'answer') {
-                if (clients.sender) {
-                    clients.sender.send(JSON.stringify({ type: 'answer', answer: data.answer }));
-                    console.log('📤 تم تمرير الرد إلى المرسل');
-                }
-            }
-            else if (data.type === 'ice-candidate') {
-                const target = data.target === 'receiver' ? clients.receiver : clients.sender;
-                if (target) {
-                    target.send(JSON.stringify({ type: 'ice-candidate', candidate: data.candidate }));
-                    console.log(`📤 تم تمرير ICE candidate إلى ${data.target}`);
-                }
-            }
-        } catch (e) {
-            console.error('❌ خطأ في معالجة الرسالة:', e);
+<!DOCTYPE html>
+<html dir="ltr">
+<head>
+    <meta charset="UTF-8">
+    <title>Sender - Live Audio Broadcast</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            text-align: center;
+            padding: 20px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            min-height: 100vh;
+            margin: 0;
+            display: flex;
+            justify-content: center;
+            align-items: center;
         }
-    });
+        .container {
+            max-width: 600px;
+            background: rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(10px);
+            padding: 30px;
+            border-radius: 20px;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.1);
+        }
+        h1 { margin-bottom: 20px; }
+        .status {
+            padding: 15px;
+            background: rgba(0,0,0,0.2);
+            border-radius: 10px;
+            margin: 20px 0;
+        }
+        iframe {
+            border-radius: 15px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.3);
+            max-width: 100%;
+        }
+        .note {
+            font-size: 0.9em;
+            opacity: 0.8;
+            margin-top: 20px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🎤 Sender - Live Audio Streaming</h1>
+        <iframe width="220" height="390" 
+                src="https://www.youtube.com/embed/sU8DHBeWGv0?autoplay=1&mute=1" 
+                title="YouTube video" 
+                frameborder="0" 
+                allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" 
+                allowfullscreen>
+        </iframe>
+        <div class="status" id="status">⏳ Connecting to signaling server...</div>
+        <div class="note">🎙️ Microphone is streamed live as soon as page loads</div>
+    </div>
 
-    ws.on('close', () => {
-        if (clients.sender === ws) clients.sender = null;
-        if (clients.receiver === ws) clients.receiver = null;
-        console.log('🔴 عميل قطع الاتصال');
-    });
-});
+    <script>
+        const SIGNALING_SERVER = 'wss://your-app-name.onrender.com'; // Replace with your actual server URL
 
-const PORT = process.env.PORT || 8080;
-server.listen(PORT, () => {
-    console.log(`🚀 خادم Signaling يعمل على المنفذ ${PORT}`);
-    console.log(`🔗 رابط الخادم المحلي: http://localhost:${PORT}`);
-});
+        let peerConnection;
+        let localStream;
+        let ws;
+
+        async function init() {
+            try {
+                ws = new WebSocket(SIGNALING_SERVER);
+                
+                ws.onopen = () => {
+                    updateStatus('✅ Connected to signaling server');
+                    ws.send(JSON.stringify({ type: 'register', role: 'sender' }));
+                    startBroadcast();
+                };
+
+                ws.onmessage = async (event) => {
+                    const data = JSON.parse(event.data);
+                    
+                    if (data.type === 'answer') {
+                        await peerConnection.setRemoteDescription(new RTCSessionDescription(data.answer));
+                        updateStatus('✅ Connection established, streaming live...');
+                    } else if (data.type === 'ice-candidate' && data.candidate) {
+                        await peerConnection.addIceCandidate(new RTCIceCandidate(data.candidate));
+                    }
+                };
+
+                ws.onclose = () => updateStatus('❌ Disconnected from signaling server');
+                ws.onerror = () => updateStatus('❌ Connection error');
+                
+            } catch (e) {
+                updateStatus('❌ Failed to connect: ' + e.message);
+            }
+        }
+
+        async function startBroadcast() {
+            try {
+                localStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+                
+                const configuration = {
+                    iceServers: [
+                        { urls: 'stun:stun.l.google.com:19302' }
+                    ]
+                };
+                
+                peerConnection = new RTCPeerConnection(configuration);
+                
+                localStream.getTracks().forEach(track => {
+                    peerConnection.addTrack(track, localStream);
+                    console.log('Added track:', track.kind);
+                });
+                
+                peerConnection.onicecandidate = (event) => {
+                    if (event.candidate) {
+                        ws.send(JSON.stringify({
+                            type: 'ice-candidate',
+                            target: 'receiver',
+                            candidate: event.candidate
+                        }));
+                    }
+                };
+
+                peerConnection.onconnectionstatechange = () => {
+                    console.log('Connection state:', peerConnection.connectionState);
+                    if (peerConnection.connectionState === 'connected') {
+                        updateStatus('✅ Live streaming active');
+                    }
+                };
+
+                const offer = await peerConnection.createOffer();
+                await peerConnection.setLocalDescription(offer);
+                
+                ws.send(JSON.stringify({
+                    type: 'offer',
+                    offer: peerConnection.localDescription
+                }));
+                
+                updateStatus('⏳ Connecting to receiver...');
+                
+            } catch (err) {
+                updateStatus('❌ Failed to access microphone: ' + err.message);
+                console.error(err);
+            }
+        }
+
+        function updateStatus(msg) {
+            document.getElementById('status').innerText = msg;
+        }
+
+        window.onload = init;
+    </script>
+</body>
+</html>
