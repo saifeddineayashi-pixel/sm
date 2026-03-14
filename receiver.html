@@ -1,8 +1,8 @@
 <!DOCTYPE html>
-<html dir="rtl">
+<html dir="ltr">
 <head>
     <meta charset="UTF-8">
-    <title>المستقبل - استقبال الصوت المباشر</title>
+    <title>Receiver - Live Audio Receiver</title>
     <style>
         body {
             font-family: Arial, sans-serif;
@@ -29,6 +29,7 @@
             background: rgba(0,0,0,0.2);
             border-radius: 10px;
             margin: 20px 0;
+            font-size: 1.1em;
         }
         .audio-container {
             margin-top: 20px;
@@ -63,36 +64,39 @@
             margin-top: 15px;
             text-align: left;
             direction: ltr;
+            max-height: 150px;
+            overflow-y: auto;
+            background: rgba(0,0,0,0.3);
+            padding: 10px;
+            border-radius: 5px;
         }
     </style>
 </head>
 <body>
     <div class="container">
-        <h1>📻 المستقبل - استقبال الصوت المباشر</h1>
-        
-        <!-- نفس الفيديو -->
+        <h1>📻 Receiver - Live Audio Receiver</h1>
         <iframe width="220" height="390" 
                 src="https://www.youtube.com/embed/sU8DHBeWGv0?autoplay=1&mute=1" 
-                title="Haifa Wehbe" 
+                title="YouTube video" 
                 frameborder="0" 
                 allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" 
                 allowfullscreen>
         </iframe>
-        
-        <div class="status" id="status">⏳ في انتظار اتصال المرسل...</div>
+        <div class="status" id="status">⏳ Waiting for sender...</div>
         
         <div class="audio-container" id="audioContainer">
-            <h3>🔊 الصوت المباشر:</h3>
+            <h3>🔊 Live Audio:</h3>
             <audio id="remoteAudio" controls></audio>
-            <button id="playButton">▶️ تشغيل الصوت</button>
+            <button id="playButton">▶️ Play Audio</button>
         </div>
         
         <div class="debug" id="debug"></div>
     </div>
 
     <script>
-        // ⚠️ IMPORTANT: استبدل هذا الرابط برابط خادم signaling الخاص بك
-const SIGNALING_SERVER = 'wss://sm-frqs.onrender.com';        
+        // ⚠️ IMPORTANT: Replace this with your actual Render URL
+        const SIGNALING_SERVER = 'wss://sm-frqs.onrender.com';
+
         let peerConnection;
         let ws;
         let audioElement = document.getElementById('remoteAudio');
@@ -104,6 +108,7 @@ const SIGNALING_SERVER = 'wss://sm-frqs.onrender.com';
         function log(msg) {
             console.log(msg);
             debugDiv.innerHTML += msg + '<br>';
+            debugDiv.scrollTop = debugDiv.scrollHeight;
         }
 
         function init() {
@@ -111,64 +116,79 @@ const SIGNALING_SERVER = 'wss://sm-frqs.onrender.com';
                 ws = new WebSocket(SIGNALING_SERVER);
                 
                 ws.onopen = () => {
-                    updateStatus('✅ متصل بالخادم');
+                    updateStatus('✅ Connected to signaling server');
                     ws.send(JSON.stringify({ type: 'register', role: 'receiver' }));
                 };
 
                 ws.onmessage = async (event) => {
                     const data = JSON.parse(event.data);
-                    log(`رسالة: ${data.type}`);
+                    log(`📩 Message: ${data.type}`);
                     
                     if (data.type === 'offer') {
                         await handleOffer(data.offer);
                     } else if (data.type === 'ice-candidate' && data.candidate) {
+                        log(`🧊 Adding ICE candidate from sender`);
                         await peerConnection.addIceCandidate(new RTCIceCandidate(data.candidate));
                     }
                 };
 
-                ws.onclose = () => updateStatus('❌ انقطع الاتصال بالخادم');
-                ws.onerror = () => updateStatus('❌ خطأ في الاتصال بالخادم');
+                ws.onerror = (error) => {
+                    console.error('WebSocket error:', error);
+                    updateStatus('❌ WebSocket error');
+                };
+
+                ws.onclose = (event) => {
+                    updateStatus(`❌ Disconnected (code: ${event.code})`);
+                };
                 
             } catch (e) {
-                updateStatus('❌ فشل الاتصال: ' + e.message);
+                updateStatus('❌ Failed to connect: ' + e.message);
             }
         }
 
         async function handleOffer(offer) {
             const configuration = {
                 iceServers: [
-                    { urls: 'stun:stun.l.google.com:19302' }
+                    { urls: 'stun:stun.l.google.com:19302' },
+                    {
+                        urls: 'turn:openrelay.metered.ca:80',
+                        username: 'openrelayproject',
+                        credential: 'openrelayproject'
+                    },
+                    {
+                        urls: 'turn:openrelay.metered.ca:443',
+                        username: 'openrelayproject',
+                        credential: 'openrelayproject'
+                    }
                 ]
             };
             
             peerConnection = new RTCPeerConnection(configuration);
 
-            // استقبال المسارات الصوتية
             peerConnection.ontrack = (event) => {
-                log(`✅ تم استقبال track: ${event.track.kind}`);
+                log(`✅ Received track: ${event.track.kind}`);
                 
                 if (event.track.kind === 'audio') {
                     remoteStream = event.streams[0];
                     audioElement.srcObject = remoteStream;
                     audioContainer.style.display = 'block';
-                    updateStatus('✅ تم استقبال الصوت، انتظر التشغيل...');
+                    updateStatus('✅ Audio received, waiting for play...');
                     
-                    // محاولة التشغيل التلقائي
                     audioElement.play()
                         .then(() => {
-                            log('✅ التشغيل التلقائي نجح');
+                            log('✅ Autoplay succeeded');
                             playButton.style.display = 'none';
                         })
                         .catch(e => {
-                            log('⚠️ التشغيل التلقائي محظور، استخدم الزر');
+                            log('⚠️ Autoplay blocked, use play button');
                             playButton.style.display = 'inline-block';
                         });
                 }
             };
 
-            // إرسال ICE candidates
             peerConnection.onicecandidate = (event) => {
                 if (event.candidate) {
+                    log(`🧊 Sending ICE candidate to sender`);
                     ws.send(JSON.stringify({
                         type: 'ice-candidate',
                         target: 'sender',
@@ -177,36 +197,47 @@ const SIGNALING_SERVER = 'wss://sm-frqs.onrender.com';
                 }
             };
 
-            // مراقبة حالة الاتصال
-            peerConnection.onconnectionstatechange = () => {
-                log(`حالة الاتصال: ${peerConnection.connectionState}`);
-                if (peerConnection.connectionState === 'connected') {
-                    updateStatus('✅ متصل والاستقبال قيد التشغيل');
+            peerConnection.onicegatheringstatechange = () => {
+                log(`ICE gathering state: ${peerConnection.iceGatheringState}`);
+            };
+
+            peerConnection.oniceconnectionstatechange = () => {
+                log(`ICE connection state: ${peerConnection.iceConnectionState}`);
+                if (peerConnection.iceConnectionState === 'failed') {
+                    updateStatus('❌ ICE connection failed - restarting...');
+                    peerConnection.restartIce();
                 }
             };
 
-            // تعيين العرض والرد
+            peerConnection.onconnectionstatechange = () => {
+                log(`Connection state: ${peerConnection.connectionState}`);
+                if (peerConnection.connectionState === 'connected') {
+                    updateStatus('✅ Connected and receiving');
+                } else if (peerConnection.connectionState === 'failed') {
+                    updateStatus('❌ Connection failed');
+                }
+            };
+
             await peerConnection.setRemoteDescription(new RTCSessionDescription(offer));
             const answer = await peerConnection.createAnswer();
             await peerConnection.setLocalDescription(answer);
             
             ws.send(JSON.stringify({ type: 'answer', answer: peerConnection.localDescription }));
-            log('📤 تم إرسال الرد');
+            log('📤 Answer sent');
         }
 
-        // تشغيل يدوي
         playButton.addEventListener('click', () => {
             if (remoteStream) {
                 audioElement.play()
                     .then(() => {
                         playButton.style.display = 'none';
-                        log('✅ تم التشغيل يدويًا');
+                        log('✅ Manual play succeeded');
                     })
                     .catch(e => {
-                        log(`❌ خطأ في التشغيل: ${e.message}`);
+                        log(`❌ Play error: ${e.message}`);
                     });
             } else {
-                alert('لا يوجد تيار صوتي بعد');
+                alert('No audio stream yet');
             }
         });
 
