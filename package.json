@@ -1,0 +1,12 @@
+{
+  "name": "webrtc-audio-broadcast",
+  "version": "1.0.0",
+  "description": "بث صوتي مباشر باستخدام WebRTC مع خادم Signaling",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "ws": "^8.16.0"
+  }
+}

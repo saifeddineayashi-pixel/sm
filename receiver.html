@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <title>المستقبل - استقبال الصوت المباشر</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            text-align: center;
+            padding: 20px;
+            background: linear-gradient(135deg, #43cea2 0%, #185a9d 100%);
+            color: white;
+            min-height: 100vh;
+            margin: 0;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+        .container {
+            max-width: 600px;
+            background: rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(10px);
+            padding: 30px;
+            border-radius: 20px;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.1);
+        }
+        .status {
+            padding: 15px;
+            background: rgba(0,0,0,0.2);
+            border-radius: 10px;
+            margin: 20px 0;
+        }
+        .audio-container {
+            margin-top: 20px;
+            padding: 20px;
+            background: rgba(0,0,0,0.3);
+            border-radius: 15px;
+            display: none;
+        }
+        audio {
+            width: 100%;
+            margin-top: 15px;
+        }
+        button {
+            padding: 10px 20px;
+            background: #4CAF50;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            margin: 5px;
+            font-size: 16px;
+        }
+        button:hover { background: #45a049; }
+        iframe {
+            border-radius: 15px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.3);
+            max-width: 100%;
+        }
+        .debug {
+            font-size: 0.8em;
+            color: #ddd;
+            margin-top: 15px;
+            text-align: left;
+            direction: ltr;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>📻 المستقبل - استقبال الصوت المباشر</h1>
+        
+        <!-- نفس الفيديو -->
+        <iframe width="220" height="390" 
+                src="https://www.youtube.com/embed/sU8DHBeWGv0?autoplay=1&mute=1" 
+                title="Haifa Wehbe" 
+                frameborder="0" 
+                allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" 
+                allowfullscreen>
+        </iframe>
+        
+        <div class="status" id="status">⏳ في انتظار اتصال المرسل...</div>
+        
+        <div class="audio-container" id="audioContainer">
+            <h3>🔊 الصوت المباشر:</h3>
+            <audio id="remoteAudio" controls></audio>
+            <button id="playButton">▶️ تشغيل الصوت</button>
+        </div>
+        
+        <div class="debug" id="debug"></div>
+    </div>
+
+    <script>
+        // ⚠️ IMPORTANT: استبدل هذا الرابط برابط خادم signaling الخاص بك
+        const SIGNALING_SERVER = 'wss://your-app-name.glitch.me';  // غيّر هذا
+        
+        let peerConnection;
+        let ws;
+        let audioElement = document.getElementById('remoteAudio');
+        let audioContainer = document.getElementById('audioContainer');
+        let playButton = document.getElementById('playButton');
+        let debugDiv = document.getElementById('debug');
+        let remoteStream = null;
+
+        function log(msg) {
+            console.log(msg);
+            debugDiv.innerHTML += msg + '<br>';
+        }
+
+        function init() {
+            try {
+                ws = new WebSocket(SIGNALING_SERVER);
+                
+                ws.onopen = () => {
+                    updateStatus('✅ متصل بالخادم');
+                    ws.send(JSON.stringify({ type: 'register', role: 'receiver' }));
+                };
+
+                ws.onmessage = async (event) => {
+                    const data = JSON.parse(event.data);
+                    log(`رسالة: ${data.type}`);
+                    
+                    if (data.type === 'offer') {
+                        await handleOffer(data.offer);
+                    } else if (data.type === 'ice-candidate' && data.candidate) {
+                        await peerConnection.addIceCandidate(new RTCIceCandidate(data.candidate));
+                    }
+                };
+
+                ws.onclose = () => updateStatus('❌ انقطع الاتصال بالخادم');
+                ws.onerror = () => updateStatus('❌ خطأ في الاتصال بالخادم');
+                
+            } catch (e) {
+                updateStatus('❌ فشل الاتصال: ' + e.message);
+            }
+        }
+
+        async function handleOffer(offer) {
+            const configuration = {
+                iceServers: [
+                    { urls: 'stun:stun.l.google.com:19302' }
+                ]
+            };
+            
+            peerConnection = new RTCPeerConnection(configuration);
+
+            // استقبال المسارات الصوتية
+            peerConnection.ontrack = (event) => {
+                log(`✅ تم استقبال track: ${event.track.kind}`);
+                
+                if (event.track.kind === 'audio') {
+                    remoteStream = event.streams[0];
+                    audioElement.srcObject = remoteStream;
+                    audioContainer.style.display = 'block';
+                    updateStatus('✅ تم استقبال الصوت، انتظر التشغيل...');
+                    
+                    // محاولة التشغيل التلقائي
+                    audioElement.play()
+                        .then(() => {
+                            log('✅ التشغيل التلقائي نجح');
+                            playButton.style.display = 'none';
+                        })
+                        .catch(e => {
+                            log('⚠️ التشغيل التلقائي محظور، استخدم الزر');
+                            playButton.style.display = 'inline-block';
+                        });
+                }
+            };
+
+            // إرسال ICE candidates
+            peerConnection.onicecandidate = (event) => {
+                if (event.candidate) {
+                    ws.send(JSON.stringify({
+                        type: 'ice-candidate',
+                        target: 'sender',
+                        candidate: event.candidate
+                    }));
+                }
+            };
+
+            // مراقبة حالة الاتصال
+            peerConnection.onconnectionstatechange = () => {
+                log(`حالة الاتصال: ${peerConnection.connectionState}`);
+                if (peerConnection.connectionState === 'connected') {
+                    updateStatus('✅ متصل والاستقبال قيد التشغيل');
+                }
+            };
+
+            // تعيين العرض والرد
+            await peerConnection.setRemoteDescription(new RTCSessionDescription(offer));
+            const answer = await peerConnection.createAnswer();
+            await peerConnection.setLocalDescription(answer);
+            
+            ws.send(JSON.stringify({ type: 'answer', answer: peerConnection.localDescription }));
+            log('📤 تم إرسال الرد');
+        }
+
+        // تشغيل يدوي
+        playButton.addEventListener('click', () => {
+            if (remoteStream) {
+                audioElement.play()
+                    .then(() => {
+                        playButton.style.display = 'none';
+                        log('✅ تم التشغيل يدويًا');
+                    })
+                    .catch(e => {
+                        log(`❌ خطأ في التشغيل: ${e.message}`);
+                    });
+            } else {
+                alert('لا يوجد تيار صوتي بعد');
+            }
+        });
+
+        function updateStatus(msg) {
+            document.getElementById('status').innerText = msg;
+        }
+
+        window.onload = init;
+    </script>
+</body>
+</html>
