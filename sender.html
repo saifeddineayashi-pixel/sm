@@ -30,6 +30,7 @@
             background: rgba(0,0,0,0.2);
             border-radius: 10px;
             margin: 20px 0;
+            font-size: 1.1em;
         }
         iframe {
             border-radius: 15px;
@@ -58,7 +59,8 @@
     </div>
 
     <script>
-        const SIGNALING_SERVER = 'wss://sm-frqs.onrender.com';// Replace with your actual server URL
+        // ⚠️ IMPORTANT: Replace this with your actual Render URL
+        const SIGNALING_SERVER = 'wss://sm-frqs.onrender.com';
 
         let peerConnection;
         let localStream;
@@ -76,20 +78,29 @@
 
                 ws.onmessage = async (event) => {
                     const data = JSON.parse(event.data);
-                    
+                    console.log('Sender received:', data.type);  // Debug log
+
                     if (data.type === 'answer') {
                         await peerConnection.setRemoteDescription(new RTCSessionDescription(data.answer));
                         updateStatus('✅ Connection established, streaming live...');
                     } else if (data.type === 'ice-candidate' && data.candidate) {
+                        console.log('Adding ICE candidate from receiver:', data.candidate);
                         await peerConnection.addIceCandidate(new RTCIceCandidate(data.candidate));
                     }
                 };
 
-                ws.onclose = () => updateStatus('❌ Disconnected from signaling server');
-                ws.onerror = () => updateStatus('❌ Connection error');
+                ws.onerror = (error) => {
+                    console.error('WebSocket error:', error);
+                    updateStatus('❌ WebSocket error - check console');
+                };
+
+                ws.onclose = (event) => {
+                    console.log('WebSocket closed:', event.code, event.reason);
+                    updateStatus(`❌ Disconnected (code: ${event.code})`);
+                };
                 
             } catch (e) {
-                updateStatus('❌ Failed to connect: ' + e.message);
+                updateStatus('❌ Failed to create WebSocket: ' + e.message);
             }
         }
 
@@ -97,21 +108,35 @@
             try {
                 localStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
                 
+                // STUN + TURN servers to improve NAT traversal
                 const configuration = {
                     iceServers: [
-                        { urls: 'stun:stun.l.google.com:19302' }
+                        { urls: 'stun:stun.l.google.com:19302' },
+                        {
+                            urls: 'turn:openrelay.metered.ca:80',
+                            username: 'openrelayproject',
+                            credential: 'openrelayproject'
+                        },
+                        {
+                            urls: 'turn:openrelay.metered.ca:443',
+                            username: 'openrelayproject',
+                            credential: 'openrelayproject'
+                        }
                     ]
                 };
                 
                 peerConnection = new RTCPeerConnection(configuration);
                 
+                // Add audio track to the connection
                 localStream.getTracks().forEach(track => {
                     peerConnection.addTrack(track, localStream);
                     console.log('Added track:', track.kind);
                 });
                 
+                // Send local ICE candidates to the receiver
                 peerConnection.onicecandidate = (event) => {
                     if (event.candidate) {
+                        console.log('Sender sending ICE candidate:', event.candidate);
                         ws.send(JSON.stringify({
                             type: 'ice-candidate',
                             target: 'receiver',
@@ -120,13 +145,30 @@
                     }
                 };
 
+                // Monitor ICE gathering state
+                peerConnection.onicegatheringstatechange = () => {
+                    console.log('ICE gathering state:', peerConnection.iceGatheringState);
+                };
+
+                // Monitor ICE connection state
+                peerConnection.oniceconnectionstatechange = () => {
+                    console.log('ICE connection state:', peerConnection.iceConnectionState);
+                    if (peerConnection.iceConnectionState === 'failed') {
+                        updateStatus('❌ ICE connection failed - trying to restart...');
+                        peerConnection.restartIce();
+                    }
+                };
+
                 peerConnection.onconnectionstatechange = () => {
                     console.log('Connection state:', peerConnection.connectionState);
                     if (peerConnection.connectionState === 'connected') {
                         updateStatus('✅ Live streaming active');
+                    } else if (peerConnection.connectionState === 'failed') {
+                        updateStatus('❌ Connection failed - check network');
                     }
                 };
 
+                // Create and send offer
                 const offer = await peerConnection.createOffer();
                 await peerConnection.setLocalDescription(offer);
                 
